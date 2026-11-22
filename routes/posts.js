@@ -16,6 +16,13 @@ const router = Router();
 const STATUSES = ['draft', 'scheduled', 'posting', 'posted', 'failed', 'canceled'];
 const REPEAT_INTERVALS = ['daily', 'weekly', 'monthly'];
 const MAX_MEDIA_PER_POST = 10;
+// A post's media can change until it goes out: once publishing has started, what's attached
+// is what the platform received.
+const MEDIA_LOCKED_STATUSES = ['posting', 'posted'];
+const mediaLocked = {
+  error: 'post_locked',
+  message: "Media can't be changed once a post is publishing or published.",
+};
 
 const futureDateRefinement = (val) => !val || new Date(val).getTime() > Date.now();
 const futureDateMessage = { message: 'must be in the future' };
@@ -140,8 +147,33 @@ const updatePostSchema = z
     publish_now ? { ...d, status: 'scheduled', scheduled_for: new Date().toISOString() } : d
   );
 
+const addMediaSchema = z.object({ alt_texts: z.string().optional() });
+
 async function copyMediaFile(url) {
   return mediaUrl(await copyMedia(path.basename(url)));
+}
+
+// alt_texts is a JSON array matching the uploaded files by position. A malformed payload
+// doesn't fail the request: the media is just stored without alt text.
+function parseAltTexts(altTexts) {
+  if (!altTexts) return [];
+  try {
+    const parsed = JSON.parse(altTexts);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function uploadedMedia(files, altTexts, firstPosition = 0) {
+  const altTextList = parseAltTexts(altTexts);
+  return files.map((file, i) => ({
+    url: mediaUrl(file.filename),
+    media_type: file.mimetype.startsWith('video/') ? 'video' : 'image',
+    alt_text:
+      typeof altTextList[i] === 'string' && altTextList[i].trim() ? altTextList[i].trim().slice(0, 1000) : null,
+    position: firstPosition + i,
+  }));
 }
 
 function parseId(req, res) {
@@ -250,27 +282,11 @@ router.post(
       return res.status(402).json({ error: 'plan_capability', message: 'Recurring posts are not available on your plan.' });
     }
 
-    let altTextList = [];
-    if (alt_texts) {
-      try {
-        const parsed = JSON.parse(alt_texts);
-        if (Array.isArray(parsed)) altTextList = parsed;
-      } catch {
-        // malformed alt text payload — post still goes through, just without alt text
-      }
-    }
-
     const status = scheduled_for ? 'scheduled' : 'draft';
     const groupId = targetIds.length > 1 ? crypto.randomUUID() : null;
     const files = req.files || [];
     await storeUploadedFiles(files);
-    const baseMedia = files.map((file, i) => ({
-      url: mediaUrl(file.filename),
-      media_type: file.mimetype.startsWith('video/') ? 'video' : 'image',
-      alt_text:
-        typeof altTextList[i] === 'string' && altTextList[i].trim() ? altTextList[i].trim().slice(0, 1000) : null,
-      position: i,
-    }));
+    const baseMedia = uploadedMedia(files, alt_texts);
 
     const created = [];
     for (let n = 0; n < targetIds.length; n++) {
@@ -369,6 +385,79 @@ router.patch(
     }
 
     res.json(post);
+  })
+);
+
+// Adds media to a post that hasn't gone out yet (multipart, same `media` + `alt_texts` fields
+// as creating one). Only this post changes: the other channels of a cross-post keep their own
+// copies. Anything refused here deletes the files multer already staged.
+router.post(
+  '/:id/media',
+  uploadMedia.array('media', MAX_MEDIA_PER_POST),
+  validate(addMediaSchema),
+  asyncHandler(async (req, res) => {
+    const files = req.files || [];
+    const refuse = async (status, body) => {
+      await Promise.all(files.map((file) => deleteMedia(file.filename)));
+      res.status(status).json(body);
+    };
+
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return refuse(400, { error: 'invalid id' });
+    if (files.length === 0) {
+      return res.status(400).json({ error: 'no_media', message: 'Attach at least one photo or video.' });
+    }
+
+    const found = await pool.query('SELECT * FROM posts WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+    if (found.rows.length === 0) return refuse(404, { error: 'not found' });
+    if (MEDIA_LOCKED_STATUSES.includes(found.rows[0].status)) return refuse(409, mediaLocked);
+
+    const existing = await pool.query(
+      'SELECT COUNT(*)::int AS count, COALESCE(MAX(position), -1) AS last FROM post_media WHERE post_id = $1',
+      [id]
+    );
+    const { count, last } = existing.rows[0];
+    if (count + files.length > MAX_MEDIA_PER_POST) {
+      return refuse(400, {
+        error: 'too_many_media',
+        message: `A post can have up to ${MAX_MEDIA_PER_POST} photos or videos.`,
+      });
+    }
+
+    await storeUploadedFiles(files);
+    for (const m of uploadedMedia(files, req.body.alt_texts, last + 1)) {
+      await pool.query(
+        'INSERT INTO post_media (post_id, url, media_type, alt_text, position) VALUES ($1, $2, $3, $4, $5)',
+        [id, m.url, m.media_type, m.alt_text, m.position]
+      );
+    }
+
+    const [post] = await attachMedia(found.rows);
+    res.status(201).json(post);
+  })
+);
+
+router.delete(
+  '/:id/media/:mediaId',
+  asyncHandler(async (req, res) => {
+    const id = parseId(req, res);
+    if (id === null) return;
+    const mediaId = Number(req.params.mediaId);
+    if (!Number.isInteger(mediaId)) return res.status(400).json({ error: 'invalid id' });
+
+    const found = await pool.query(
+      `SELECT post_media.url, posts.status
+       FROM post_media
+       JOIN posts ON posts.id = post_media.post_id
+       WHERE post_media.id = $1 AND posts.id = $2 AND posts.user_id = $3`,
+      [mediaId, id, req.user.id]
+    );
+    if (found.rows.length === 0) return res.status(404).json({ error: 'not found' });
+    if (MEDIA_LOCKED_STATUSES.includes(found.rows[0].status)) return res.status(409).json(mediaLocked);
+
+    await pool.query('DELETE FROM post_media WHERE id = $1', [mediaId]);
+    await deleteMedia(path.basename(found.rows[0].url));
+    res.status(204).end();
   })
 );
 

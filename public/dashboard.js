@@ -304,9 +304,12 @@ function syncAccountSelection() {
 // One tab per selected channel, each laid out roughly the way that platform shows a post:
 // a 16:9 player for YouTube, a 9:16 frame for TikTok, media-first for Instagram/Pinterest,
 // and a feed post for everything else. Text past a platform's character limit is
-// highlighted, and a platform that needs media it doesn't have yet says so. Media comes
-// from the files picked in this session or, when editing, the post's existing media.
+// highlighted, and a platform that needs media it doesn't have yet says so. Media is the
+// post's existing media (when editing, minus anything removed) followed by the files picked
+// in this session.
 let editingMedia = [];
+// Existing media removed in the composer; deleted on the server when the edit is saved.
+let removedMediaIds = [];
 let previewAccountId = null;
 
 document.addEventListener(
@@ -326,9 +329,10 @@ document.addEventListener(
 );
 
 function composerMediaItems() {
-  return selectedMedia.length
-    ? selectedMedia.map((m) => ({ url: m.previewUrl, video: m.file.type.startsWith('video/') }))
-    : editingMedia.map((m) => ({ url: m.url, video: m.media_type === 'video' }));
+  return [
+    ...editingMedia.map((m) => ({ url: m.url, video: m.media_type === 'video' })),
+    ...selectedMedia.map((m) => ({ url: m.previewUrl, video: m.file.type.startsWith('video/') })),
+  ];
 }
 
 function previewMediaEl(item, { controls = true } = {}) {
@@ -687,7 +691,7 @@ function tiktokPublishProblem() {
     return 'You need to indicate if your content promotes yourself, a third party, or both.';
   }
   if (!tiktokEls.durationWarning.hidden) return tiktokEls.durationWarning.textContent;
-  if (!editingPostId && !selectedMedia.some((m) => m.file.type.startsWith('video/'))) {
+  if (!composerMediaItems().some((m) => m.video)) {
     return 'TikTok posts need a video attached.';
   }
   return null;
@@ -766,7 +770,7 @@ function youtubePublishProblem() {
   if (/[<>]/.test(title)) return "YouTube titles can't contain < or >.";
   if (!youtubeEls.privacy.value) return 'Choose who can see the video on YouTube.';
   if (!youtubeKidsValue()) return 'Tell YouTube whether this video is made for kids.';
-  if (!editingPostId && !selectedMedia.some((m) => m.file.type.startsWith('video/'))) {
+  if (!composerMediaItems().some((m) => m.video)) {
     return 'YouTube posts need a video attached.';
   }
   return null;
@@ -866,7 +870,24 @@ const mediaUploadLabel = document.getElementById('media-upload-label');
 let selectedMedia = [];
 
 function renderMediaPreview() {
-  mediaPreviewGrid.innerHTML = selectedMedia
+  const existingHtml = editingMedia
+    .map(
+      (m) => `
+    <div class="media-preview-item">
+      <div class="media-preview-thumb">
+        ${
+          m.media_type === 'video'
+            ? `<video src="${escapeHtml(m.url)}" muted></video>`
+            : `<img src="${escapeHtml(m.url)}" alt="${escapeHtml(m.alt_text || '')}">`
+        }
+        <button type="button" class="media-remove" data-media-id="${m.id}" aria-label="Remove">&times;</button>
+      </div>
+    </div>
+  `
+    )
+    .join('');
+
+  const selectedHtml = selectedMedia
     .map(
       (item, i) => `
     <div class="media-preview-item">
@@ -884,7 +905,19 @@ function renderMediaPreview() {
     )
     .join('');
 
-  mediaPreviewGrid.querySelectorAll('.media-remove').forEach((btn) => {
+  mediaPreviewGrid.innerHTML = existingHtml + selectedHtml;
+
+  mediaPreviewGrid.querySelectorAll('.media-remove[data-media-id]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.mediaId;
+      editingMedia = editingMedia.filter((m) => String(m.id) !== id);
+      removedMediaIds.push(id);
+      composerDirty = true;
+      renderMediaPreview();
+    });
+  });
+
+  mediaPreviewGrid.querySelectorAll('.media-remove[data-index]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const i = Number(btn.dataset.index);
       URL.revokeObjectURL(selectedMedia[i].previewUrl);
@@ -899,7 +932,8 @@ function renderMediaPreview() {
     });
   });
 
-  mediaUploadLabel.style.display = selectedMedia.length >= MAX_MEDIA_PER_POST ? 'none' : '';
+  mediaUploadLabel.style.display =
+    editingMedia.length + selectedMedia.length >= MAX_MEDIA_PER_POST ? 'none' : '';
   updateTikTokState();
   updatePostPreview();
 }
@@ -911,7 +945,7 @@ function resetMediaPreview() {
 }
 
 mediaInput.addEventListener('change', () => {
-  const remaining = MAX_MEDIA_PER_POST - selectedMedia.length;
+  const remaining = MAX_MEDIA_PER_POST - editingMedia.length - selectedMedia.length;
   const files = Array.from(mediaInput.files).slice(0, remaining);
   if (mediaInput.files.length > remaining) {
     showToast(`You can attach up to ${MAX_MEDIA_PER_POST} files per post.`, 'warning');
@@ -1212,8 +1246,6 @@ function openPostDialog(prefillDate) {
   document.getElementById('post-dialog-delete').hidden = true;
   document.getElementById('account-picker').classList.remove('locked');
   document.getElementById('crosspost-hint').hidden = false;
-  document.getElementById('media-edit-hint').hidden = true;
-  mediaUploadLabel.style.display = '';
 
   const form = document.getElementById('post-dialog-form');
   form.reset();
@@ -1225,6 +1257,7 @@ function openPostDialog(prefillDate) {
   }
 
   editingMedia = [];
+  removedMediaIds = [];
   resetMediaPreview();
 
   const scheduleMode = prefillDate ? 'schedule' : 'draft';
@@ -1259,29 +1292,8 @@ function openEditDialog(post) {
   document.getElementById('post-content').value = post.content;
 
   editingMedia = post.media || [];
+  removedMediaIds = [];
   resetMediaPreview();
-  mediaUploadLabel.style.display = 'none';
-  if (post.media && post.media.length > 0) {
-    mediaPreviewGrid.innerHTML = post.media
-      .map(
-        (m) => `
-      <div class="media-preview-item">
-        <div class="media-preview-thumb">
-          ${
-            m.media_type === 'video'
-              ? `<video src="${escapeHtml(m.url)}" muted></video>`
-              : `<img src="${escapeHtml(m.url)}" alt="${escapeHtml(m.alt_text || '')}">`
-          }
-        </div>
-      </div>
-    `
-      )
-      .join('');
-    document.getElementById('media-edit-hint').hidden = false;
-  } else {
-    mediaPreviewGrid.innerHTML = '<p class="media-empty">No media attached</p>';
-    document.getElementById('media-edit-hint').hidden = true;
-  }
 
   const scheduleMode = post.scheduled_for ? 'schedule' : 'draft';
   document.querySelectorAll('.schedule-option').forEach((b) => {
@@ -1459,6 +1471,23 @@ postDialogForm.addEventListener(
         ...(youtubeOptions ? { youtube_options: youtubeOptions } : {}),
       };
       try {
+        // Media first, so a post that this save schedules (or sends now) already has it.
+        // Each step clears its own pending work, so saving again after a failure doesn't
+        // repeat what already went through.
+        while (removedMediaIds.length > 0) {
+          await apiJson(`/api/v1/posts/${editingPostId}/media/${removedMediaIds[0]}`, { method: 'DELETE' });
+          removedMediaIds.shift();
+        }
+        if (selectedMedia.length > 0) {
+          const mediaBody = new FormData();
+          selectedMedia.forEach((item) => mediaBody.append('media', item.file));
+          mediaBody.set('alt_texts', JSON.stringify(selectedMedia.map((item) => item.altText)));
+          const withMedia = await apiUpload(`/api/v1/posts/${editingPostId}/media`, mediaBody, (pct) => {
+            postDialogSubmitBtn.textContent = `Uploading… ${pct}%`;
+          });
+          editingMedia = withMedia.media;
+          resetMediaPreview();
+        }
         const updated = await apiJson(`/api/v1/posts/${editingPostId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
