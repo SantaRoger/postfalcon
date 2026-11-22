@@ -10,7 +10,10 @@ import { isPlatformEnabled } from '../lib/platforms.js';
 
 const router = Router();
 const GRAPH_VERSION = 'v19.0';
-const SCOPE = 'pages_show_list,pages_manage_posts,pages_read_engagement,instagram_basic,instagram_content_publish';
+// business_management: without it /me/accounts leaves out Pages the user reaches through a
+// Meta business portfolio rather than a direct role on the Page.
+const SCOPE =
+  'pages_show_list,pages_manage_posts,pages_read_engagement,instagram_basic,instagram_content_publish,business_management';
 
 function redirectUri() {
   return `${process.env.BASE_URL}/api/facebook/callback`;
