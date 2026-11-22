@@ -222,6 +222,106 @@ describe('posts', () => {
     await client.delete(`/api/v1/posts/${post.body.id}`);
     expect(fs.existsSync(filePath)).toBe(false);
   });
+
+  it('adds media to an existing draft, after the media it already has', async () => {
+    const client = await loginNewUser();
+    const account = await client.post('/api/v1/social-accounts').send({ platform: 'twitter', display_name: '@me' });
+    const post = await client
+      .post('/api/v1/posts')
+      .field('social_account_id', String(account.body.id))
+      .field('content', 'draft with one image')
+      .attach('media', Buffer.from('first-image'), 'one.jpg');
+
+    const res = await client
+      .post(`/api/v1/posts/${post.body.id}/media`)
+      .field('alt_texts', JSON.stringify(['second image']))
+      .attach('media', Buffer.from('second-image'), 'two.jpg');
+
+    expect(res.status).toBe(201);
+    expect(res.body.media).toHaveLength(2);
+    expect(res.body.media.map((m) => m.position)).toEqual([0, 1]);
+    expect(res.body.media[1].alt_text).toBe('second image');
+    expect(fs.existsSync(path.join(uploadDir, path.basename(res.body.media[1].url)))).toBe(true);
+  });
+
+  it('refuses media beyond 10 per post and keeps nothing from the refused upload', async () => {
+    const client = await loginNewUser();
+    const account = await client.post('/api/v1/social-accounts').send({ platform: 'twitter', display_name: '@me' });
+    let create = client
+      .post('/api/v1/posts')
+      .field('social_account_id', String(account.body.id))
+      .field('content', 'full post');
+    for (let i = 0; i < 10; i++) create = create.attach('media', Buffer.from(`image-${i}`), `image-${i}.jpg`);
+    const post = await create;
+    expect(post.body.media).toHaveLength(10);
+
+    const before = fs.readdirSync(uploadDir).length;
+    const res = await client
+      .post(`/api/v1/posts/${post.body.id}/media`)
+      .attach('media', Buffer.from('one-too-many'), 'eleven.jpg');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('too_many_media');
+    expect(fs.readdirSync(uploadDir).length).toBe(before);
+  });
+
+  it("doesn't add media to someone else's post", async () => {
+    const owner = await loginNewUser();
+    const account = await owner.post('/api/v1/social-accounts').send({ platform: 'twitter', display_name: '@me' });
+    const post = await owner.post('/api/v1/posts').send({ social_account_id: account.body.id, content: 'mine' });
+
+    const other = await loginNewUser();
+    const res = await other
+      .post(`/api/v1/posts/${post.body.id}/media`)
+      .attach('media', Buffer.from('not-yours'), 'sneaky.jpg');
+
+    expect(res.status).toBe(404);
+    const fetched = await owner.get(`/api/v1/posts/${post.body.id}`);
+    expect(fetched.body.media).toEqual([]);
+  });
+
+  it('removes one media file from a draft and deletes it from disk', async () => {
+    const client = await loginNewUser();
+    const account = await client.post('/api/v1/social-accounts').send({ platform: 'twitter', display_name: '@me' });
+    const post = await client
+      .post('/api/v1/posts')
+      .field('social_account_id', String(account.body.id))
+      .field('content', 'two images')
+      .attach('media', Buffer.from('keep-me'), 'keep.jpg')
+      .attach('media', Buffer.from('remove-me'), 'remove.jpg');
+    const [kept, removed] = post.body.media;
+    const removedPath = path.join(uploadDir, path.basename(removed.url));
+
+    const res = await client.delete(`/api/v1/posts/${post.body.id}/media/${removed.id}`);
+    expect(res.status).toBe(204);
+    expect(fs.existsSync(removedPath)).toBe(false);
+
+    const fetched = await client.get(`/api/v1/posts/${post.body.id}`);
+    expect(fetched.body.media.map((m) => m.id)).toEqual([kept.id]);
+  });
+
+  it("doesn't change the media of a published post", async () => {
+    const client = await loginNewUser();
+    const account = await client.post('/api/v1/social-accounts').send({ platform: 'twitter', display_name: '@me' });
+    const post = await client
+      .post('/api/v1/posts')
+      .field('social_account_id', String(account.body.id))
+      .field('content', 'already out')
+      .attach('media', Buffer.from('published-image'), 'published.jpg');
+    await pool.query("UPDATE posts SET status = 'posted' WHERE id = $1", [post.body.id]);
+
+    const add = await client
+      .post(`/api/v1/posts/${post.body.id}/media`)
+      .attach('media', Buffer.from('too-late'), 'late.jpg');
+    expect(add.status).toBe(409);
+    expect(add.body.error).toBe('post_locked');
+
+    const remove = await client.delete(`/api/v1/posts/${post.body.id}/media/${post.body.media[0].id}`);
+    expect(remove.status).toBe(409);
+
+    const fetched = await client.get(`/api/v1/posts/${post.body.id}`);
+    expect(fetched.body.media).toHaveLength(1);
+  });
 });
 
 describe('post now', () => {
