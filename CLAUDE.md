@@ -122,6 +122,17 @@ lib/platforms.js     The platform registry — the ONE place a social platform i
                      personal profile (not a Company Page) and is text-only for now; its access
                      token has no refresh_token for standard apps, so it just expires (~60 days)
                      and surfaces as a normal failed-post error until reconnected.
+                     Payload blog (id `payload`, fork-only, not upstream): not a social network —
+                     a post publishes as an article on a Payload CMS site. Connects like Bluesky
+                     (site URL + API key form, routes/payload.js; the key is access_token, the site
+                     settings are social_accounts.metadata). The post text is the Markdown body and
+                     the composer's blog panel (title, excerpt, author, category, tags, SEO) travels
+                     as payload_options into posts.platform_options.payload; the pickers are fed by
+                     GET /api/payload/accounts/:id/options. Articles take up to 50,000 characters,
+                     never cross-post and carry no media (ARTICLE_PLATFORMS in routes/posts.js). The
+                     site's field names live in FIELDS/RELATIONS at the top of
+                     lib/platforms/payload.js. When merging upstream, a new migration that rewrites
+                     social_accounts_platform_check must keep 'payload' in its list (see 033).
 routes/              One file per resource, mounted in app.js. requireAuth applied at app.use() level,
                      not per-route (pages.js is the exception — it applies requirePageAuth per-route since
                      login/signup must stay reachable while logged out). '/' is the public landing page;

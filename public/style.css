@@ -5891,10 +5891,26 @@ dialog#post-dialog .platform-field > legend {
 }
 
 dialog#post-dialog .platform-field input[type='text'],
-dialog#post-dialog .platform-field select {
+dialog#post-dialog .platform-field select,
+dialog#post-dialog .platform-field textarea {
   width: 100%;
   font-size: 0.85rem;
   font-weight: 400;
+}
+
+dialog#post-dialog .platform-field textarea {
+  min-height: 0;
+  resize: vertical;
+}
+
+#payload-controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+#payload-controls[hidden] {
+  display: none;
 }
 
 dialog#post-dialog .platform-panel .hint {

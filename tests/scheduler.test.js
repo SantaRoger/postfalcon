@@ -1313,6 +1313,117 @@ describe('scheduler', () => {
     await fs.unlink(path.join(uploadDir, filename)).catch(() => {});
   });
 
+  it('publishes a due Payload blog post as a published article', async () => {
+    const userId = await createUser('payload-sched@example.com');
+    const account = await pool.query(
+      `INSERT INTO social_accounts (user_id, platform, display_name, external_account_id, access_token, metadata)
+       VALUES ($1, 'payload', 'blog.example.com', 'blog.example.com/posts', 'payload-key', $2) RETURNING id`,
+      [userId, JSON.stringify({ site_url: 'https://blog.example.com', collection: 'posts' })]
+    );
+    const postId = await createScheduledPost(userId, account.rows[0].id, '# Heading\n\nBody in **Markdown**.');
+    await pool.query('UPDATE posts SET platform_options = $2 WHERE id = $1', [
+      postId,
+      JSON.stringify({
+        payload: {
+          title: 'A guide',
+          excerpt: 'What the guide covers.',
+          author: 3,
+          category: 7,
+          tags: [1, 2],
+          cta_level: '2',
+          seo_keywords: ['crm'],
+          seo_title: 'A guide | Blog',
+        },
+      }),
+    ]);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url, options) => {
+        expect(String(url)).toBe('https://blog.example.com/api/posts');
+        expect(options.method).toBe('POST');
+        expect(options.headers.Authorization).toBe('users API-Key payload-key');
+        const body = JSON.parse(options.body);
+        expect(body).toMatchObject({
+          title: 'A guide',
+          excerpt: 'What the guide covers.',
+          content: '# Heading\n\nBody in **Markdown**.',
+          author: 3,
+          category: 7,
+          tags: [1, 2],
+          ctaLevel: '2',
+          seoKeywords: ['crm'],
+          meta: { title: 'A guide | Blog' },
+          _status: 'published',
+        });
+        expect(body.slug).toBeUndefined();
+        expect(Math.abs(new Date(body.publishedAt).getTime() - Date.now())).toBeLessThan(10_000);
+        return jsonResponse({ message: 'Post successfully created.', doc: { id: 42, slug: 'a-guide' } }, 201);
+      })
+    );
+
+    await processDuePosts();
+
+    const { rows } = await pool.query('SELECT * FROM posts WHERE id = $1', [postId]);
+    expect(rows[0].status).toBe('posted');
+    expect(rows[0].platform_post_id).toBe('42');
+  });
+
+  it('fails a Payload blog post with no blog settings, without calling the site', async () => {
+    const userId = await createUser('payload-missing@example.com');
+    const account = await pool.query(
+      `INSERT INTO social_accounts (user_id, platform, display_name, external_account_id, access_token, metadata)
+       VALUES ($1, 'payload', 'blog.example.com', 'blog.example.com/posts', 'payload-key', $2) RETURNING id`,
+      [userId, JSON.stringify({ site_url: 'https://blog.example.com' })]
+    );
+    const postId = await createScheduledPost(userId, account.rows[0].id, 'body only');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await processDuePosts();
+
+    const { rows } = await pool.query('SELECT * FROM posts WHERE id = $1', [postId]);
+    expect(rows[0].status).toBe('failed');
+    expect(rows[0].error_message).toMatch(/missing a title, an excerpt, an author, a category/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("shows the site's field errors when it refuses a Payload blog post", async () => {
+    const userId = await createUser('payload-refused@example.com');
+    const account = await pool.query(
+      `INSERT INTO social_accounts (user_id, platform, display_name, external_account_id, access_token, metadata)
+       VALUES ($1, 'payload', 'blog.example.com', 'blog.example.com/posts', 'payload-key', $2) RETURNING id`,
+      [userId, JSON.stringify({ site_url: 'https://blog.example.com' })]
+    );
+    const postId = await createScheduledPost(userId, account.rows[0].id, 'body');
+    await pool.query('UPDATE posts SET platform_options = $2 WHERE id = $1', [
+      postId,
+      JSON.stringify({ payload: { title: 'Taken', slug: 'taken', excerpt: 'x', author: 3, category: 7 } }),
+    ]);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse(
+          {
+            errors: [
+              {
+                message: 'The following field is invalid: slug',
+                data: { errors: [{ path: 'slug', message: 'Value must be unique' }] },
+              },
+            ],
+          },
+          400
+        )
+      )
+    );
+
+    await processDuePosts();
+
+    const { rows } = await pool.query('SELECT * FROM posts WHERE id = $1', [postId]);
+    expect(rows[0].status).toBe('failed');
+    expect(rows[0].error_message).toMatch(/slug: Value must be unique/);
+  });
+
   it('fails a Bluesky post that has a video attached', async () => {
     const userId = await createUser('bs-video@example.com');
     const account = await pool.query(

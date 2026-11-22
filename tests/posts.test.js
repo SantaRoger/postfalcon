@@ -715,3 +715,78 @@ describe('youtube options', () => {
     });
   });
 });
+
+describe('payload blog posts', () => {
+  async function createBlogAccount(client) {
+    const me = await client.get('/api/auth/me');
+    const { rows } = await pool.query(
+      `INSERT INTO social_accounts (user_id, platform, display_name, external_account_id, access_token, metadata)
+       VALUES ($1, 'payload', 'blog.example.com', 'blog.example.com/posts', 'payload-key', '{"site_url":"https://blog.example.com"}')
+       RETURNING id`,
+      [me.body.id]
+    );
+    return rows[0].id;
+  }
+
+  it('stores the article settings and takes a body longer than a social post', async () => {
+    const client = await loginNewUser();
+    const blogId = await createBlogAccount(client);
+    const body = 'x'.repeat(12000);
+
+    const post = await client.post('/api/v1/posts').send({
+      social_account_id: blogId,
+      content: body,
+      payload_options: { title: 'A guide', excerpt: 'What it covers.', author: 3, category: 7, tags: [1, 2] },
+    });
+
+    expect(post.status).toBe(201);
+    expect(post.body.content).toHaveLength(12000);
+    expect(post.body.platform_options.payload).toEqual({
+      title: 'A guide',
+      excerpt: 'What it covers.',
+      author: 3,
+      category: 7,
+      tags: [1, 2],
+    });
+
+    const longer = await client.patch(`/api/v1/posts/${post.body.id}`).send({ content: 'y'.repeat(15000) });
+    expect(longer.status).toBe(200);
+  });
+
+  it('keeps the 10,000 character limit for other platforms', async () => {
+    const client = await loginNewUser();
+    const account = await client.post('/api/v1/social-accounts').send({ platform: 'twitter', display_name: '@me' });
+
+    const tooLong = await client
+      .post('/api/v1/posts')
+      .send({ social_account_id: account.body.id, content: 'x'.repeat(10001) });
+    expect(tooLong.status).toBe(400);
+    expect(tooLong.body.error).toBe('validation_failed');
+
+    const post = await client.post('/api/v1/posts').send({ social_account_id: account.body.id, content: 'short' });
+    const edited = await client.patch(`/api/v1/posts/${post.body.id}`).send({ content: 'x'.repeat(10001) });
+    expect(edited.status).toBe(400);
+  });
+
+  it("doesn't cross-post an article to other channels", async () => {
+    const client = await loginNewUser();
+    const blogId = await createBlogAccount(client);
+    const account = await client.post('/api/v1/social-accounts').send({ platform: 'twitter', display_name: '@me' });
+
+    const res = await client
+      .post('/api/v1/posts')
+      .send({ social_account_ids: [blogId, account.body.id], content: 'article body' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('article_alone');
+  });
+
+  it('rejects a slug that is not URL-safe', async () => {
+    const client = await loginNewUser();
+    const blogId = await createBlogAccount(client);
+    const res = await client
+      .post('/api/v1/posts')
+      .send({ social_account_id: blogId, content: 'body', payload_options: { slug: 'Not A Slug' } });
+    expect(res.status).toBe(400);
+  });
+});

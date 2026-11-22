@@ -1,4 +1,11 @@
-const PLATFORM_DISPLAY_OVERRIDES = { tiktok: 'TikTok', youtube: 'YouTube', linkedin: 'LinkedIn', twitter: 'X', x: 'X' };
+const PLATFORM_DISPLAY_OVERRIDES = {
+  tiktok: 'TikTok',
+  youtube: 'YouTube',
+  linkedin: 'LinkedIn',
+  twitter: 'X',
+  x: 'X',
+  payload: 'Payload blog',
+};
 function platformDisplayName(platform) {
   if (!platform) return 'Unknown';
   return PLATFORM_DISPLAY_OVERRIDES[platform] || platform.charAt(0).toUpperCase() + platform.slice(1);
@@ -239,6 +246,7 @@ const PLATFORM_CHAR_LIMITS = {
   linkedin: 3000,
   tiktok: 2200,
   pinterest: 500,
+  payload: 50000,
 };
 
 // Accounts whose platform rejected their credentials (or whose token is about to lapse):
@@ -296,6 +304,7 @@ function syncAccountSelection() {
   updateCharCount();
   refreshTikTokPanel();
   refreshYouTubePanel();
+  refreshPayloadPanel();
   updatePostPreview();
   updateSubmitBlocked();
 }
@@ -741,6 +750,7 @@ function preparePlatformPanels(post) {
   prepareTikTokPanel(post?.platform_options?.tiktok);
   youtubePrefill = post?.platform_options?.youtube || null;
   youtubeEls.panel.hidden = true;
+  preparePayloadPanel(post?.platform_options?.payload);
 }
 
 function refreshYouTubePanel() {
@@ -796,8 +806,182 @@ function youtubeOptionsPayload() {
 // (Instagram's photo shape/format limits need no check here: lib/imageFit.js fits any photo
 // at publish time.)
 function platformPublishProblem() {
-  return tiktokPublishProblem() || youtubePublishProblem();
+  return tiktokPublishProblem() || youtubePublishProblem() || payloadPublishProblem();
 }
+
+// --- Payload blog panel -------------------------------------------------------------------
+// A post to a Payload blog is an article: the post text is its Markdown body, and this panel
+// holds the rest (title, excerpt, author, ...). Authors, categories and tags are read from the
+// site each time the panel opens. The settings travel with the post as payload_options
+// (posts.platform_options.payload).
+
+const payloadEls = {
+  panel: document.getElementById('payload-panel'),
+  status: document.getElementById('payload-status'),
+  controls: document.getElementById('payload-controls'),
+  title: document.getElementById('payload-title'),
+  slug: document.getElementById('payload-slug'),
+  excerpt: document.getElementById('payload-excerpt'),
+  author: document.getElementById('payload-author'),
+  category: document.getElementById('payload-category'),
+  tags: document.getElementById('payload-tags'),
+  emoji: document.getElementById('payload-emoji'),
+  cta: document.getElementById('payload-cta'),
+  keywords: document.getElementById('payload-keywords'),
+  seoTitle: document.getElementById('payload-seo-title'),
+  seoDescription: document.getElementById('payload-seo-description'),
+};
+
+let payloadPrefill = null;
+// The blog account whose authors/categories/tags the panel currently shows (null = none
+// loaded, e.g. the site couldn't be reached).
+let payloadLoadedAccountId = null;
+let payloadLoadingAccountId = null;
+
+function selectedPayloadAccounts() {
+  const ids = selectedAccountIds();
+  return accountsCache.filter((a) => a.platform === 'payload' && ids.includes(String(a.id)));
+}
+
+function preparePayloadPanel(prefill) {
+  payloadPrefill = prefill || null;
+  payloadLoadedAccountId = null;
+  payloadLoadingAccountId = null;
+  payloadEls.panel.hidden = true;
+}
+
+function setPayloadStatus(message) {
+  payloadEls.status.hidden = !message;
+  payloadEls.status.textContent = message || '';
+  payloadEls.controls.hidden = Boolean(message);
+}
+
+function fillPayloadSelect(select, items, placeholder) {
+  select.innerHTML =
+    (placeholder ? `<option value="">${escapeHtml(placeholder)}</option>` : '') +
+    items.map((item) => `<option value="${escapeHtml(String(item.id))}">${escapeHtml(item.name)}</option>`).join('');
+}
+
+function applyPayloadPrefill() {
+  const p = payloadPrefill;
+  payloadPrefill = null;
+  if (!p) return;
+  payloadEls.title.value = p.title || '';
+  payloadEls.slug.value = p.slug || '';
+  payloadEls.excerpt.value = p.excerpt || '';
+  payloadEls.author.value = p.author != null ? String(p.author) : '';
+  payloadEls.category.value = p.category != null ? String(p.category) : '';
+  const tags = (p.tags || []).map(String);
+  [...payloadEls.tags.options].forEach((option) => {
+    option.selected = tags.includes(option.value);
+  });
+  payloadEls.emoji.value = p.featured_emoji || '';
+  payloadEls.cta.value = p.cta_level || '';
+  payloadEls.keywords.value = (p.seo_keywords || []).join(', ');
+  payloadEls.seoTitle.value = p.seo_title || '';
+  payloadEls.seoDescription.value = p.seo_description || '';
+}
+
+async function refreshPayloadPanel() {
+  const [account] = selectedPayloadAccounts();
+  payloadEls.panel.hidden = !account;
+  if (!account) {
+    updateSubmitBlocked();
+    return;
+  }
+  const accountId = String(account.id);
+  if (payloadLoadedAccountId === accountId || payloadLoadingAccountId === accountId) {
+    updateSubmitBlocked();
+    return;
+  }
+
+  payloadLoadedAccountId = null;
+  payloadLoadingAccountId = accountId;
+  setPayloadStatus('Loading your blog\u2019s authors and categories…');
+  updateSubmitBlocked();
+  let options;
+  try {
+    options = await apiJson(`/api/payload/accounts/${accountId}/options`);
+  } catch (err) {
+    if (payloadLoadingAccountId !== accountId) return;
+    payloadLoadingAccountId = null;
+    setPayloadStatus(`Couldn\u2019t load your blog\u2019s settings: ${err.message}`);
+    updateSubmitBlocked();
+    return;
+  }
+  // The selection (or the whole composer) changed while the site was answering.
+  if (payloadLoadingAccountId !== accountId) return;
+  payloadLoadingAccountId = null;
+  payloadLoadedAccountId = accountId;
+
+  fillPayloadSelect(payloadEls.author, options.authors || [], 'Select an author');
+  fillPayloadSelect(payloadEls.category, options.categories || [], 'Select a category');
+  fillPayloadSelect(payloadEls.tags, options.tags || [], null);
+  applyPayloadPrefill();
+  setPayloadStatus('');
+  updateSubmitBlocked();
+}
+
+// Ids arrive as option values (strings); a Postgres-backed Payload site wants its numeric
+// ids back as numbers.
+function payloadRelationValue(value) {
+  return /^\d+$/.test(value) ? Number(value) : value;
+}
+
+const PAYLOAD_SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+// Why this blog post can't be saved (the first checks) or published (the rest) yet.
+function payloadPublishProblem() {
+  if (payloadEls.panel.hidden) return null;
+  if (selectedAccountIds().length > 1) {
+    return 'A blog post goes to one blog only. Create the social posts separately.';
+  }
+  const slug = payloadEls.slug.value.trim();
+  if (slug && !PAYLOAD_SLUG_PATTERN.test(slug)) {
+    return 'The slug can only have lowercase letters, numbers and single hyphens.';
+  }
+  if (!isPublishing()) return null;
+  if (payloadLoadedAccountId === null) {
+    return 'Your blog\u2019s authors and categories haven\u2019t loaded, so this can\u2019t be published yet.';
+  }
+  if (composerMediaItems().length > 0) return 'Blog posts are text only: remove the attached media.';
+  if (!payloadEls.title.value.trim()) return 'Add a title for the blog post.';
+  if (!payloadEls.excerpt.value.trim()) return 'Add an excerpt for the blog post.';
+  if (!payloadEls.author.value) return 'Choose the blog post\u2019s author.';
+  if (!payloadEls.category.value) return 'Choose the blog post\u2019s category.';
+  return null;
+}
+
+// null while the panel is hidden or the site's settings haven't loaded: saving then leaves
+// the post's stored blog settings as they are instead of blanking the pickers' values.
+function payloadOptionsPayload() {
+  if (payloadEls.panel.hidden || payloadLoadedAccountId === null) return null;
+  const text = (el) => el.value.trim();
+  const tags = [...payloadEls.tags.selectedOptions].map((option) => payloadRelationValue(option.value));
+  const keywords = payloadEls.keywords.value
+    .split(',')
+    .map((k) => k.trim())
+    .filter(Boolean);
+  return {
+    ...(text(payloadEls.title) ? { title: text(payloadEls.title) } : {}),
+    ...(text(payloadEls.slug) ? { slug: text(payloadEls.slug) } : {}),
+    ...(text(payloadEls.excerpt) ? { excerpt: text(payloadEls.excerpt) } : {}),
+    ...(payloadEls.author.value ? { author: payloadRelationValue(payloadEls.author.value) } : {}),
+    ...(payloadEls.category.value ? { category: payloadRelationValue(payloadEls.category.value) } : {}),
+    ...(tags.length ? { tags } : {}),
+    ...(text(payloadEls.emoji) ? { featured_emoji: text(payloadEls.emoji) } : {}),
+    ...(payloadEls.cta.value ? { cta_level: payloadEls.cta.value } : {}),
+    ...(keywords.length ? { seo_keywords: keywords } : {}),
+    ...(text(payloadEls.seoTitle) ? { seo_title: text(payloadEls.seoTitle) } : {}),
+    ...(text(payloadEls.seoDescription) ? { seo_description: text(payloadEls.seoDescription) } : {}),
+  };
+}
+
+Object.values(payloadEls)
+  .filter((el) => el.matches('input, select, textarea'))
+  .forEach((el) => {
+    el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', updateSubmitBlocked);
+  });
 
 function updateSubmitBlocked() {
   postDialogSubmitBtn?.classList.toggle('is-blocked', Boolean(platformPublishProblem()));
@@ -1454,6 +1638,7 @@ postDialogForm.addEventListener(
     }
     const tiktokOptions = tiktokOptionsPayload();
     const youtubeOptions = youtubeOptionsPayload();
+    const payloadOptions = payloadOptionsPayload();
     const tiktokScheduled = Boolean(tiktokOptions) && isPublishing();
 
     if (editingPostId) {
@@ -1469,6 +1654,7 @@ postDialogForm.addEventListener(
         repeat_until: repeatUntilLocal ? new Date(repeatUntilLocal).toISOString() : null,
         ...(tiktokOptions ? { tiktok_options: tiktokOptions } : {}),
         ...(youtubeOptions ? { youtube_options: youtubeOptions } : {}),
+        ...(payloadOptions ? { payload_options: payloadOptions } : {}),
       };
       try {
         // Media first, so a post that this save schedules (or sends now) already has it.
@@ -1531,6 +1717,9 @@ postDialogForm.addEventListener(
     }
     if (youtubeOptions) {
       body.set('youtube_options', JSON.stringify(youtubeOptions));
+    }
+    if (payloadOptions) {
+      body.set('payload_options', JSON.stringify(payloadOptions));
     }
 
     try {

@@ -189,6 +189,35 @@ blueskyForm?.addEventListener(
   })
 );
 
+const payloadForm = document.getElementById('payload-connect-form');
+payloadForm?.addEventListener(
+  'submit',
+  withLoading(payloadForm.querySelector('button[type="submit"]'), 'Connecting…', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const collection = form.collection.value.trim();
+    const urlPattern = form.url_pattern.value.trim();
+    try {
+      await apiJson('/api/payload/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          site_url: form.site_url.value.trim(),
+          api_key: form.api_key.value.trim(),
+          ...(collection ? { collection } : {}),
+          ...(urlPattern ? { url_pattern: urlPattern } : {}),
+        }),
+      });
+      form.reset();
+      showToast('Blog connected.', 'success');
+      loadAccounts();
+      loadSidebarAccounts();
+    } catch (err) {
+      showToast(err.message);
+    }
+  })
+);
+
 if (new URLSearchParams(location.search).get('error') === 'plan_limit') {
   // atAccountLimit() also returns true for a paid platform on an account with no active trial/
   // subscription (Mastodon, Bluesky and Telegram are free).

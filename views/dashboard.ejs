@@ -265,6 +265,77 @@
           <p class="platform-consent">By uploading, you agree to the <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">YouTube Terms of Service</a>.</p>
         </div>
 
+        <div class="composer-field platform-panel payload-panel" id="payload-panel" hidden>
+          <div class="platform-panel-header">
+            <span class="composer-label">Blog post settings</span>
+          </div>
+          <p class="hint" id="payload-status" hidden></p>
+
+          <div id="payload-controls">
+            <label class="platform-field">
+              <span>Title</span>
+              <input type="text" id="payload-title" maxlength="200" placeholder="Article title (required)">
+            </label>
+
+            <label class="platform-field">
+              <span>Slug <span class="label-optional">(optional)</span></span>
+              <input type="text" id="payload-slug" maxlength="200" placeholder="Made from the title if left blank">
+            </label>
+
+            <label class="platform-field">
+              <span>Excerpt</span>
+              <textarea id="payload-excerpt" maxlength="300" rows="3" placeholder="1-2 sentences for previews and search results (required, up to 300 characters)"></textarea>
+            </label>
+
+            <label class="platform-field">
+              <span>Author</span>
+              <select id="payload-author"></select>
+            </label>
+
+            <label class="platform-field">
+              <span>Category</span>
+              <select id="payload-category"></select>
+            </label>
+
+            <label class="platform-field">
+              <span>Tags <span class="label-optional">(optional, pick any number)</span></span>
+              <select id="payload-tags" multiple size="5"></select>
+            </label>
+
+            <label class="platform-field">
+              <span>Emoji <span class="label-optional">(optional)</span></span>
+              <input type="text" id="payload-emoji" maxlength="16" placeholder="Shown as the post's icon">
+            </label>
+
+            <label class="platform-field">
+              <span>Promotion level</span>
+              <select id="payload-cta">
+                <option value="">Site default</option>
+                <option value="1">1 - Light (mention only)</option>
+                <option value="2">2 - Medium (soft call to action)</option>
+                <option value="3">3 - Heavy (strong call to action)</option>
+              </select>
+            </label>
+
+            <label class="platform-field">
+              <span>SEO keywords <span class="label-optional">(optional, comma-separated)</span></span>
+              <input type="text" id="payload-keywords" placeholder="primary keyword, secondary keyword">
+            </label>
+
+            <label class="platform-field">
+              <span>SEO title <span class="label-optional">(optional)</span></span>
+              <input type="text" id="payload-seo-title" maxlength="200">
+            </label>
+
+            <label class="platform-field">
+              <span>SEO description <span class="label-optional">(optional)</span></span>
+              <textarea id="payload-seo-description" maxlength="300" rows="2"></textarea>
+            </label>
+          </div>
+
+          <p class="hint">The post text is the article body, in Markdown. It goes live on the site at the time you choose. Blog posts are text only and go to one blog at a time.</p>
+        </div>
+
       </div>
 
       <aside class="composer-side">

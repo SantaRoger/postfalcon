@@ -239,11 +239,12 @@ const PLATFORM_META = {
   twitter: { label: 'X', color: '#111111' },
   x: { label: 'X', color: '#111111' },
   linkedin: { label: 'in', color: '#0A66C2' },
+  payload: { label: 'PB', color: '#0F766E' },
 };
 
 const PLATFORM_GLYPHS = new Set([
   'facebook', 'instagram', 'mastodon', 'telegram', 'youtube', 'tiktok', 'twitter', 'linkedin',
-  'bluesky', 'threads', 'pinterest', 'x',
+  'bluesky', 'threads', 'pinterest', 'x', 'payload',
 ]);
 
 // Contents of a platform badge: the real brand mark when we have one, else the text label.

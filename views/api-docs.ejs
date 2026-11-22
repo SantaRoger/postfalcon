@@ -65,7 +65,7 @@
             <tr><td><code>DELETE /api/v1/social-accounts/:id</code></td><td>Disconnect an account</td></tr>
             <tr><td><code>GET /api/v1/posts</code></td><td>List posts &mdash; filter with <code>?status=</code> and <code>?social_account_id=</code></td></tr>
             <tr><td><code>GET /api/v1/posts/:id</code></td><td>Get a single post</td></tr>
-            <tr><td><code>POST /api/v1/posts</code></td><td>Create a draft or scheduled post (<code>social_account_id</code> <em>or</em> <code>social_account_ids</code>, <code>content</code>, optional <code>scheduled_for</code> <em>or</em> <code>publish_now: true</code> (published on the next scheduler run, within a minute), <code>repeat_interval</code>, <code>repeat_until</code>, <code>tiktok_options</code>, <code>youtube_options</code>)</td></tr>
+            <tr><td><code>POST /api/v1/posts</code></td><td>Create a draft or scheduled post (<code>social_account_id</code> <em>or</em> <code>social_account_ids</code>, <code>content</code>, optional <code>scheduled_for</code> <em>or</em> <code>publish_now: true</code> (published on the next scheduler run, within a minute), <code>repeat_interval</code>, <code>repeat_until</code>, <code>tiktok_options</code>, <code>youtube_options</code>, <code>payload_options</code>)</td></tr>
             <tr><td><code>PATCH /api/v1/posts/:id</code></td><td>Update a post's content, status, schedule, repeat settings, <code>tiktok_options</code>, or <code>youtube_options</code>; <code>publish_now: true</code> sends a draft out within a minute</td></tr>
             <tr><td><code>POST /api/v1/posts/:id/media</code></td><td>Add photos or videos to a post that hasn't been published (<code>multipart/form-data</code>: one or more <code>media</code> files, optional <code>alt_texts</code> as a JSON array in the same order; up to 10 per post). Returns the post with its <code>media</code></td></tr>
             <tr><td><code>DELETE /api/v1/posts/:id/media/:mediaId</code></td><td>Remove one photo or video from a post that hasn't been published</td></tr>
@@ -128,6 +128,24 @@
         100 characters of the content are used, and without a <code>privacy_status</code> the video
         uploads as <code>private</code>. Like <code>tiktok_options</code>, it only applies to the
         YouTube channels of a cross-post.
+      </p>
+    </section>
+
+    <section class="api-docs-section">
+      <h2>Payload blog settings</h2>
+      <p>
+        A post to a Payload blog account (<code>platform: "payload"</code>) is published as an
+        article: <code>content</code> is the body in Markdown (up to 50,000 characters instead of
+        10,000) and <code>payload_options</code> carries the rest: <code>title</code>,
+        <code>excerpt</code> (up to 300 characters), <code>author</code> and <code>category</code>
+        (ids), which are all needed to publish, plus optional <code>slug</code>,
+        <code>tags</code> (ids), <code>featured_emoji</code>, <code>seo_keywords</code> (strings),
+        <code>cta_level</code> (<code>"1"</code>, <code>"2"</code> or <code>"3"</code>),
+        <code>seo_title</code> and <code>seo_description</code>.
+        <code>GET /api/payload/accounts/:id/options</code> lists the site's authors, categories
+        and tags with their ids. An article goes to one blog account only (no cross-posting) and
+        can't have media. On <code>PATCH</code>, the given <code>payload_options</code> replace the
+        post's previous ones.
       </p>
     </section>
 

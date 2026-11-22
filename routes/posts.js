@@ -16,6 +16,14 @@ const router = Router();
 const STATUSES = ['draft', 'scheduled', 'posting', 'posted', 'failed', 'canceled'];
 const REPEAT_INTERVALS = ['daily', 'weekly', 'monthly'];
 const MAX_MEDIA_PER_POST = 10;
+// A social post's text. An article for a blog platform can be longer.
+const MAX_CONTENT_LENGTH = 10000;
+const MAX_ARTICLE_LENGTH = 50000;
+const ARTICLE_PLATFORMS = ['payload'];
+const contentTooLong = {
+  error: 'validation_failed',
+  details: { formErrors: [], fieldErrors: { content: [`must be at most ${MAX_CONTENT_LENGTH} characters`] } },
+};
 // A post's media can change until it goes out: once publishing has started, what's attached
 // is what the platform received.
 const MEDIA_LOCKED_STATUSES = ['posting', 'posted'];
@@ -94,9 +102,35 @@ const youtubeOptions = jsonOptions(
   })
 );
 
+// The article settings of a post to a Payload blog (see lib/platforms/payload.js). All
+// optional here so a draft can be saved half-filled; the adapter insists on title, excerpt,
+// author and category when it publishes. Relationship ids are numbers on a Postgres-backed
+// site and strings on a MongoDB one.
+const relationId = z.union([z.number().int().positive(), z.string().trim().min(1).max(64)]);
+const payloadOptions = jsonOptions(
+  z.object({
+    title: z.string().trim().min(1).max(200).optional(),
+    slug: z
+      .string()
+      .trim()
+      .max(200)
+      .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'lowercase letters, numbers and single hyphens only')
+      .optional(),
+    excerpt: z.string().trim().min(1).max(300).optional(),
+    author: relationId.optional(),
+    category: relationId.optional(),
+    tags: z.array(relationId).max(50).optional(),
+    featured_emoji: z.string().trim().min(1).max(16).optional(),
+    seo_keywords: z.array(z.string().trim().min(1).max(100)).max(30).optional(),
+    cta_level: z.enum(['1', '2', '3']).optional(),
+    seo_title: z.string().trim().min(1).max(200).optional(),
+    seo_description: z.string().trim().min(1).max(300).optional(),
+  })
+);
+
 // Which request field carries each platform's per-post settings. A cross-post stores each
 // platform's settings only on that platform's posts.
-const PLATFORM_OPTION_FIELDS = { tiktok: 'tiktok_options', youtube: 'youtube_options' };
+const PLATFORM_OPTION_FIELDS = { tiktok: 'tiktok_options', youtube: 'youtube_options', payload: 'payload_options' };
 
 function platformOptionsFor(platform, body) {
   const field = PLATFORM_OPTION_FIELDS[platform];
@@ -107,7 +141,7 @@ const createPostSchema = z
   .object({
     social_account_id: z.coerce.number().int().positive().optional(),
     social_account_ids: accountIds,
-    content: z.string().trim().min(1).max(10000),
+    content: z.string().trim().min(1).max(MAX_ARTICLE_LENGTH),
     scheduled_for: z.string().datetime().optional().refine(futureDateRefinement, futureDateMessage),
     repeat_interval: z.enum(REPEAT_INTERVALS).optional(),
     repeat_until: z.string().datetime().optional().refine(futureDateRefinement, futureDateMessage),
@@ -115,6 +149,7 @@ const createPostSchema = z
     publish_now: publishNow,
     tiktok_options: tiktokOptions,
     youtube_options: youtubeOptions,
+    payload_options: payloadOptions,
   })
   .refine((d) => d.social_account_id || (d.social_account_ids && d.social_account_ids.length), {
     message: 'social_account_id or social_account_ids is required',
@@ -127,7 +162,7 @@ const createPostSchema = z
 
 const updatePostSchema = z
   .object({
-    content: z.string().trim().min(1).max(10000).optional(),
+    content: z.string().trim().min(1).max(MAX_ARTICLE_LENGTH).optional(),
     scheduled_for: z.string().datetime().nullable().optional().refine(futureDateRefinement, futureDateMessage),
     status: z.enum(STATUSES).optional(),
     repeat_interval: z.enum(REPEAT_INTERVALS).nullable().optional(),
@@ -135,6 +170,7 @@ const updatePostSchema = z
     publish_now: publishNow,
     tiktok_options: tiktokOptions,
     youtube_options: youtubeOptions,
+    payload_options: payloadOptions,
   })
   .refine((data) => Object.keys(data).some((k) => k !== 'publish_now' || data.publish_now), {
     message: 'no fields to update',
@@ -277,6 +313,18 @@ router.post(
     if (targetIds.length === 0) {
       return res.status(400).json({ error: 'invalid social_account_id' });
     }
+    const articleTargets = owned.rows.filter((r) => ARTICLE_PLATFORMS.includes(r.platform));
+    // An article's text is its Markdown body, which makes no sense as a social post, so it
+    // goes to its one blog and nowhere else.
+    if (articleTargets.length > 0 && targetIds.length > 1) {
+      return res.status(400).json({
+        error: 'article_alone',
+        message: 'A blog post goes to one blog only. Create the social posts separately.',
+      });
+    }
+    if (articleTargets.length === 0 && content.length > MAX_CONTENT_LENGTH) {
+      return res.status(400).json(contentTooLong);
+    }
 
     if (repeat_interval && !planHasCapability(req.user.plan, 'repeatedPosts')) {
       return res.status(402).json({ error: 'plan_capability', message: 'Recurring posts are not available on your plan.' });
@@ -349,6 +397,16 @@ router.patch(
     const { content, scheduled_for, status, repeat_interval, repeat_until } = req.body;
     if (repeat_interval && !planHasCapability(req.user.plan, 'repeatedPosts')) {
       return res.status(402).json({ error: 'plan_capability', message: 'Recurring posts are not available on your plan.' });
+    }
+    if (content !== undefined && content.length > MAX_CONTENT_LENGTH) {
+      const target = await pool.query(
+        `SELECT social_accounts.platform FROM posts
+         JOIN social_accounts ON social_accounts.id = posts.social_account_id
+         WHERE posts.id = $1 AND posts.user_id = $2`,
+        [id, req.user.id]
+      );
+      if (target.rows.length === 0) return res.status(404).json({ error: 'not found' });
+      if (!ARTICLE_PLATFORMS.includes(target.rows[0].platform)) return res.status(400).json(contentTooLong);
     }
     const fields = [];
     const values = [];
